@@ -1,0 +1,51 @@
+name: 재고·가격 확인
+
+on:
+  schedule:
+    - cron: "*/30 * * * *" # 30분마다 (GitHub 사정에 따라 몇 분~수십 분 늦어질 수 있음)
+  workflow_dispatch: {} # Actions 탭에서 수동 실행
+
+concurrency:
+  group: check
+  cancel-in-progress: false
+
+permissions:
+  contents: write # 아래 keepalive 커밋용
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: 확인 실행 (러너에 설치된 크롬 사용)
+        run: node --experimental-strip-types scripts/check.ts
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          CHROME_PATH: /usr/bin/google-chrome
+          LOCAL_SCHEDULER: "off"
+          # 공개 저장소라 실행 로그가 누구에게나 보이므로 상품별 결과는 남기지 않음
+          QUIET_ITEM_LOG: "1"
+          PG_POOL_MAX: "3"
+
+      # 공개 저장소는 60일 동안 커밋이 없으면 GitHub이 예약 실행을 멈춤 → 50일마다 빈 커밋으로 유지
+      - name: 예약 실행 유지 (keepalive)
+        if: github.event_name == 'schedule'
+        run: |
+          last=$(git log -1 --format=%ct)
+          now=$(date +%s)
+          if [ $(( (now - last) / 86400 )) -ge 50 ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git commit --allow-empty -m "chore: keep scheduled checks alive"
+            git push
+          fi
